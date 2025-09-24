@@ -5,7 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "cartopy>=0.25.0",
+    "geopy>=2.4.1",
+    "h5py>=3.14.0",
     "matplotlib>=3.10.5",
     "numpy>=2.3.2",
     "pytest>=8.4.1",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"] # Default

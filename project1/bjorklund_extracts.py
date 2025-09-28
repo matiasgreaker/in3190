@@ -15,11 +15,14 @@ import pathlib
 import time
 import dataclasses
 import pickle
+import dateutil.parser
+
+# Pandas
+import pandas as pd
 
 #For datetime objects
 from matplotlib import dates
 from datetime import datetime, timedelta
-import dateutil.parser
 
 #For map
 import cartopy.crs as ccrs
@@ -31,15 +34,16 @@ from geopy.distance import great_circle
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
 # Set data path
 DATA_PATH = PROJECT_ROOT / 'project1' / 'project_data'
-# Location to save temp cache data, to avoid to re-compute a bunch of steps
-CACHE_DIR = pathlib.Path(".cache")
-CACHE_STATION_DATA = CACHE_DIR / pathlib.Path("station_data_cache.pickle")
+
+# Making it a tuple so we cant edit it by mistake
+TONGA_LAT_LON : tuple[float,float] = (-20.550, -175.385) # latitude and longitude
 
 
 @dataclasses.dataclass
 class StationData:
-    """Data from a station contained in one data object"""
-    station_name : str = ""
+    """Data from a station contained in one data object. I´ve used a dataclass to make it easy to handle.
+    A list of dataclasses is really easy to work with. E.g. you can convert it to a pandas DataFrame with pd.DataFrame(station_data)"""
+    station_name : str
     """Name of the station"""
     longitude : float
     """Longetude postion of the station"""
@@ -47,20 +51,26 @@ class StationData:
     """Latitude position of the station"""
     data : np.ndarray
     """The raw data from the stations"""
-    time : np.ndarray
-    """Time of the sampled data"""
+    N_samples : int
+    """Number of samples in the data"""
+    start_time : np.ndarray
+    """Start time of the sampled data"""
     dt : float
     """Sample period"""
+    distance_to_tonga : float = None
+    """Distance to Tonga in meters. This is not part of the raw data, but It is useful to have it here"""
+    
+    def get_time_vector(self) -> np.ndarray:
+        """Generate a time vector for the data, based on start_time, dt and N_samples
+        I do not save this in the dataclass to save memory, and decoding time. This is actually a quite heavy operation"""
+        stop_time = self.dt*(self.N_samples)
+        times = np.arange(np.datetime64(self.start_time), np.datetime64(self.start_time) + np.timedelta64(int(stop_time*1000),'ms'),step=np.timedelta64(int(self.dt*1000),'ms'))
+        return times
 
 
 
 def parse_h5_station_data(num_files=None) -> list[StationData]:
     """Parse the raw HDF5 data and return a list of StationData objects"""
-
-    # Use cache if there exist one
-    if CACHE_STATION_DATA.exists():
-        with CACHE_STATION_DATA.open("rb") as fp:
-            station_data = pickle.load(fp)
 
     # Get a list of all file names
     fn_list = os.listdir(DATA_PATH) #List of all file names
@@ -87,7 +97,10 @@ def parse_h5_station_data(num_files=None) -> list[StationData]:
     for ii in range(N_files):
         if (ii%50) == 0:
             print('Loading station ' , ii, ' out of ' , N_files-1)
-
+        # Skip files that are not .h5
+        if not fn_list[ii].endswith('.h5'):
+            print(f"Skipping file {fn_list[ii]} as it is not an .h5 file")
+            continue
         this_fn = h5py.File(pathlib.Path(DATA_PATH / fn_list[ii]), 'r') # The file path we will read
 
         # Read the latitude and longitude attributes for the station and put into vectors
@@ -99,7 +112,7 @@ def parse_h5_station_data(num_files=None) -> list[StationData]:
         level1 = list(this_fn.keys()) # /waveforms
         level2 = list(this_fn[level1[0]].keys()) # /waveforms/dataset_name
         dataset = this_fn['/' + level1[0] + '/' + level2[0]] #Reading dataset in subgroup
-        #print(f"Dataset attribute: {dataset.attrs}")
+        station_name = str(dataset.attrs['station']) #Station name attribute
         data = dataset[:] #Extract numpy array from dataset object
         #exit()
         #If missing data, pad with zeros
@@ -114,40 +127,33 @@ def parse_h5_station_data(num_files=None) -> list[StationData]:
         start_time_str = dataset.attrs['starttime']
         start_time = dateutil.parser.isoparse(start_time_str) #Time attribute on ISO-format
 
+        # Sample period
         dt[ii] = dataset.attrs['delta']
-        stop_time = dt[ii]*(N_samples)
-        times = np.arange(np.datetime64(start_time), np.datetime64(start_time) + np.timedelta64(int(stop_time*1000),'ms'),step=np.timedelta64(int(dt[ii]*1000),'ms'))
-        times_collection[ii,:] = times #Loading times into aggregate array
 
         station_data.append(
             StationData(
-                station_name="",
+                station_name=station_name,
                 longitude=lons[ii],
                 latitude=lats[ii],
                 data=data_collection[ii,:],
-                time=times_collection[ii,:],
+                N_samples=N_samples,
+                start_time=start_time,
                 dt=dt[ii]
             )
         )
 
-    # Save to cache if not already there
-    if not CACHE_STATION_DATA.exists():
-        CACHE_STATION_DATA.mkdir()
-    with CACHE_STATION_DATA.open("wb") as fp:
-        pickle.dump(station_data, fp)
-
     return station_data
 
 
-def plot_map(lats, lons, tonga_latlon):
+def plot_map(station_data: list[StationData], tonga_latlon):
     northward_offset = 90 #As in sample program
     central_lat = tonga_latlon[0] + northward_offset
     central_lon = tonga_latlon[1]
 
-    #fig = plt.figure(figsize=(15, 15))
-    fig, ax = plt.subplots()
-    #ax = fig.add_subplot(1,1,1)
-    #ax = fig.add_subplot(1, 1, 1, projection=ccrs.AzimuthalEquidistant(central_latitude = central_lat, central_longitude=central_lon))
+    fig = plt.figure(figsize=(15, 15))
+    #fig, ax = plt.subplots()
+    ax = fig.add_subplot(1,1,1)
+    ax = fig.add_subplot(1, 1, 1, projection=ccrs.AzimuthalEquidistant(central_latitude = central_lat, central_longitude=central_lon))
 
     #Stock background (Natural Earth)
     ax.stock_img()
@@ -165,26 +171,31 @@ def plot_map(lats, lons, tonga_latlon):
 
     #Plot stations and Hunga Tonga
     ax.scatter(tonga_latlon[1], tonga_latlon[0], marker = 'x', linewidth = 2, color='red', transform=ccrs.PlateCarree()) #Transform is PlateCarree regardless of projection
-
+    
+    station_df = pd.DataFrame(station_data)
+    lons = station_df['longitude']
+    lats = station_df['latitude']
     ax.scatter(lons, lats, marker = '^', linewidth = 0.5, facecolor='none', edgecolor='magenta', transform=ccrs.PlateCarree()) #Transform is PlateCarree regardless of projection
 
     plt.show()
 
 
-def circle_distance(n_files, lats, lons, tonga_latlon):
+def circle_distance(station_data: list[StationData], tonga_latlon):
     #Calculate great circle distance. Using geopy.great_circle
     dists = []
-    for i in range(n_files):
-        dists.append(great_circle((tonga_latlon[0], tonga_latlon[1]) , (lats[i], lons[i])).m)
-        
+    for station in station_data:
+        d = great_circle((tonga_latlon[0], tonga_latlon[1]) , (station.latitude, station.longitude)).m
+        dists.append(d)
+        station.distance_to_tonga = d # Save distance to Tonga in the dataclass
+
     dists = np.array(dists)
     dists_km = dists/1000
-    
-    print('Smallest great cricle distance is {:.2f}km. Largest great circle distance is {:.2f}km'.format(
+
+    print('Smallest great circle distance is {:.2f}km. Largest great circle distance is {:.2f}km'.format(
         np.min(dists_km), np.max(dists_km)))
     
-    plt.style.use('seaborn-whitegrid')
-    n_vec = np.linspace(0,n_files-1,n_files)
+    #plt.style.use('seaborn-whitegrid')
+    n_vec = np.linspace(0,len(station_data)-1,len(station_data))
     fig = plt.figure(figsize=(15,10))
     ax = fig.add_subplot(111)
     ax.scatter(n_vec, np.sort(dists_km), s=0.5)
@@ -198,15 +209,8 @@ def circle_distance(n_files, lats, lons, tonga_latlon):
 if __name__ == "__main__":
     # READ DATA
     stations = parse_h5_station_data()
-    #n_files = len(lats)
-#
-    #fig, ax = plt.subplots()
-    #ax.plot()
-#
+
     ## Hunga Tonga location
-    #tonga_latlon = [-20.550, -175.385] # latitude and longitude
-#
-    ## Map
-    #plot_map(lats, lons, tonga_latlon)
-#
-    #dists_km = circle_distance(n_files, lats, lons, tonga_latlon)
+    #plot_map(stations, TONGA_LAT_LON)
+    # Plot and calculate distances
+    dists_km = circle_distance(stations, TONGA_LAT_LON)

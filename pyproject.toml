@@ -8,9 +8,14 @@ dependencies = [
     "cartopy>=0.25.0",
     "geopy>=2.4.1",
     "h5py>=3.14.0",
+    "ipykernel>=6.30.1",
     "matplotlib>=3.10.5",
     "numpy>=2.3.2",
+    "pandas>=2.3.2",
+    "pykdtree>=1.4.3",
+    "pyproj>=3.7.2",
     "pytest>=8.4.1",
+    "scipy>=1.16.2",
 ]
 
 [tool.setuptools.packages.find]

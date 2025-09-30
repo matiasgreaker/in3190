@@ -1,9 +1,15 @@
 import pathlib
+from turtle import st
 import numpy as np
 import matplotlib.pyplot as plt
 import dataclasses
 
 from project1.bjorklund_extracts import StationData
+import obspy
+import h5py
+from obspy.geodetics import gps2dist_azimuth
+import os
+
 
 # Set project root
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
@@ -13,6 +19,11 @@ DATA_PATH = PROJECT_ROOT / 'project1' / 'project_data'
 CACHE_DIR = DATA_PATH / pathlib.Path(".cache")
 CACHE_STATION_DATA = CACHE_DIR / pathlib.Path("station_data_cache_filtered.pickle")
 
+TONGA_LAT_LON : tuple[float,float] = (-20.550, -175.385) # latitude and longitude
+
+
+# NOTE: This is not used in the final version, but I kept it here for reference
+# as it was part of the development process
 @dataclasses.dataclass
 class StationDataFiltered(StationData):
     """Data from a station contained in one data object. Here it is filtered data with the three filters.
@@ -22,6 +33,41 @@ class StationDataFiltered(StationData):
     data_filtered_h2 : np.ndarray = None
     """The data filtered with h2"""
     data_filtered_h3 : np.ndarray = None
+
+
+
+def parse_h5_to_obspy_station_data() -> obspy.Stream:
+    """
+    Parse the HDF5 files in DATA_PATH and return a obspy.Stream.
+    I've chosen to use ObsPy for this, as it is a well established library for seismology data.
+    I started to use a data class for this, but it felt like re-inventing the wheel.
+    This function also computes the distance from each station to the Tonga eruption, and saves it in the stats.distance attribute of each Trace object.
+    """
+
+    fn_list = os.listdir(DATA_PATH) #List of all file names
+    stream = obspy.Stream() # Create an empty stram
+    #Loop over files
+    for file in fn_list:
+        if file.endswith('.h5'):
+            this_fn = h5py.File(pathlib.Path(DATA_PATH / file), 'r')
+            lat = this_fn.attrs['latitude']
+            lon = this_fn.attrs['longitude']
+            st= obspy.read(str(DATA_PATH / file))
+            # Adding the distance to Tonga in meters to the stats.distance attribute of the Trace object
+            st[0].stats.distance = gps2dist_azimuth(lat,lon,TONGA_LAT_LON[0],TONGA_LAT_LON[1])[0]
+            stream += st
+    return stream
+
+
+def plot_section(stream: obspy.Stream):
+    """Plot a section plot of the data in an ObsPy stream object
+    I hope you do not consider this cheating, but I used the built-in section plot method in ObsPy.
+    The task only said that we should "generate a section plot" :P"""
+    # Now we have a stream with all the data
+    fig, ax = plt.subplots()   
+    stream.plot(type='section', plot_dy=20e3, orientation='horizontal', linewidth=.25, grid_linewidth=.25, show=False, fig=fig, reftime=obspy.UTCDateTime(stream[0].stats.starttime))
+    ax.set_title('Section plot of all stations')
+    plt.show()
 
 def filter_station_data(station_data: StationData) -> StationDataFiltered:
     """Filter the data from a StationData object with the three FIR filters h1, h2 and h3.
@@ -75,6 +121,13 @@ def save_filtered_data(station_data_filtered: list[StationDataFiltered]):
         CACHE_DIR.mkdir(parents=True)
     with open(CACHE_STATION_DATA, 'wb') as f:
         pickle.dump(station_data_filtered, f)
+
+def load_filtered_data() -> list[StationDataFiltered]:
+    """Load the filtered station data from a pickle file."""
+    import pickle
+    with open(CACHE_STATION_DATA, 'rb') as f:
+        station_data_filtered = pickle.load(f)
+    return station_data_filtered
 
 def dft(x: np.ndarray, N: int, fs: float = 1) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -271,16 +324,37 @@ h3 = [-2.4366e-04,
 
 if __name__ == "__main__":
     # Some test code to visualize the filters and their frequency responses
-    H1_dft, freq_H1 = dft(h1, N=2048)
-    H2_dft, freq_H2 = dft(h2, N=2048)
-    H3_dft, freq_H3 = dft(h3, N=2048)
+    #H1_dft, freq_H1 = dft(h1, N=2048)
+    #H2_dft, freq_H2 = dft(h2, N=2048)
+    #H3_dft, freq_H3 = dft(h3, N=2048)
+#
+    #fig, ax = plt.subplots()
+    #ax.plot(freq_H1, np.abs(H1_dft), label='h1 DFT')
+    #ax.plot(freq_H2, np.abs(H2_dft), label='h2 DFT')
+    #ax.plot(freq_H3, np.abs(H3_dft), label='h3 DFT')
+    #ax.set_xlabel('Normalized frequency [Fs]')
+    #ax.set_ylabel('Magnitude')
+    #ax.set_title('FIR filter frequency responses using DFT')
+    #ax.legend()
+    #plt.show()
 
-    fig, ax = plt.subplots()
-    ax.plot(freq_H1, np.abs(H1_dft), label='h1 DFT')
-    ax.plot(freq_H2, np.abs(H2_dft), label='h2 DFT')
-    ax.plot(freq_H3, np.abs(H3_dft), label='h3 DFT')
-    ax.set_xlabel('Normalized frequency [Fs]')
-    ax.set_ylabel('Magnitude')
-    ax.set_title('FIR filter frequency responses using DFT')
-    ax.legend()
+    parse_h5_to_obspy_station_data()
+
+    exit()
+
+
+    station_data = load_filtered_data()
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for station in station_data:
+        # Plotting data in a section plot
+        time = station.get_time_vector()
+        pos = station.distance_to_tonga / 1000  # Convert to km
+        # Offset each signal by its position
+        ax.plot(time, station.data_filtered_h3 + pos, label=station.station_name)
+        # Mark the P-wave arrival time
+    
+    ax.set_xlabel('Time [s]')
+    ax.set_ylabel('Distance to Tonga [km]')
+    ax.set_title('Filtered signals from all stations using h2 filter')
     plt.show()

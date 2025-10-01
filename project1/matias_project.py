@@ -1,4 +1,5 @@
 import pathlib
+import pickle
 from turtle import st
 import numpy as np
 import matplotlib.pyplot as plt
@@ -36,7 +37,7 @@ class StationDataFiltered(StationData):
 
 
 
-def parse_h5_to_obspy_station_data() -> obspy.Stream:
+def parse_h5_to_obspy_station_data(num_files: int = None) -> obspy.Stream:
     """
     Parse the HDF5 files in DATA_PATH and return a obspy.Stream.
     I've chosen to use ObsPy for this, as it is a well established library for seismology data.
@@ -47,8 +48,11 @@ def parse_h5_to_obspy_station_data() -> obspy.Stream:
     fn_list = os.listdir(DATA_PATH) #List of all file names
     stream = obspy.Stream() # Create an empty stram
     #Loop over files
-    for file in fn_list:
+    for i, file in enumerate(fn_list):
         if file.endswith('.h5'):
+            # Only pick a certain number of files if num_files is set
+            if num_files is not None and i >= num_files:
+                break
             this_fn = h5py.File(pathlib.Path(DATA_PATH / file), 'r')
             lat = this_fn.attrs['latitude']
             lon = this_fn.attrs['longitude']
@@ -114,6 +118,7 @@ def convolve_signal_with_filter(h: np.ndarray, x: np.ndarray, ylen_choice: int =
 
     return y
 
+
 def save_filtered_data(station_data_filtered: list[StationDataFiltered]):
     """Save the filtered station data to a pickle file."""
     import pickle
@@ -156,6 +161,76 @@ def dft(x: np.ndarray, N: int, fs: float = 1) -> tuple[np.ndarray, np.ndarray]:
     # Frequency bins
     f = k * fs / N
     return X, f
+
+
+@dataclasses.dataclass
+class ArrivalTimePick:
+    """Dataclass to hold the arrival time pick for a single trace."""
+    trace_index: int
+    station_name: str
+    arrival_time: float
+    distance_to_tonga: float
+
+def pick_arrival_time(data_stream: obspy.core.Stream, start_index: int = 0, stop_index: int = int(1e6)) -> list[ArrivalTimePick]:
+    """
+    Pick the arrival time manually using ginput in each trace of the stream.
+    First filter the data with each of the three filters and plot them in subplots.
+    Ive chosen to return a list of ArrivalTimePick dataclass objects, to keep track of the trace id and distance to Tonga as well.
+    I think it is better to return structured data instead of just a list of floats.
+    """
+    data_stream.sort(keys=["distance"])  # Sort the stream by distance to Tonga
+    arrival_times = list[ArrivalTimePick]()
+    for i, trace in enumerate(data_stream):
+        # Only process traces within the specified index range
+        if i < start_index:
+            continue
+        if i > stop_index:
+            break
+        # Filter the data with each of the three filters
+        data_h1 = np.convolve(h1, trace.data, mode="same")
+        data_h2 = np.convolve(h2, trace.data, mode="same")
+        data_h3 = np.convolve(h3, trace.data, mode="same")
+        # Create a figure with four subplots
+        fig, axs = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+        time = trace.times()
+        axs[0].plot(time, trace.data)
+        axs[0].set_title(f"Original Trace - {trace.id}")
+        axs[1].plot(time, data_h1)
+        axs[1].set_title("Filtered Trace - h1")
+        axs[2].plot(time, data_h2)
+        axs[2].set_title("Filtered Trace - h2")
+        axs[3].plot(time, data_h3)
+        axs[3].set_title("Filtered Trace - h3")
+        axs[3].set_xlabel("Time [s]")
+        fig.suptitle(f"Pick arrival time for {trace.id}")
+    
+        plt.tight_layout()
+        arrival_time = plt.ginput(1, timeout=0)[0][0]
+
+        arrival_times.append(ArrivalTimePick(
+            trace_index=i,
+            station_name=trace.stats.station,
+            arrival_time=arrival_time,
+            distance_to_tonga=trace.stats.distance
+        ))
+
+        # Plot the trace and get user input for the arrival time
+        plt.close()
+
+    # Save the arrival times in a pickle file
+    with open(CACHE_DIR / pathlib.Path(f"arrival_times_start_{start_index}_stop_{i}.pkl"), "wb") as f:
+        pickle.dump(arrival_times, f)
+
+    return arrival_times
+
+
+def load_arrival_times(fileName: pathlib.Path) -> list[ArrivalTimePick]:
+    """Load the arrival times from a pickle file."""
+    import pickle
+    with open(CACHE_DIR / fileName, "rb") as f:
+        arrival_times = pickle.load(f)
+        print(f"Loaded {len(arrival_times)} arrival time picks from {fileName}")
+    return arrival_times
 
 
 # Filter coefficients for three different FIR filters
@@ -321,13 +396,13 @@ h3 = [-2.4366e-04,
   -2.6135e-19,
   -2.4366e-04]
 
-
+# Ive been using this main block to test different parts of the code during development
 if __name__ == "__main__":
     # Some test code to visualize the filters and their frequency responses
     #H1_dft, freq_H1 = dft(h1, N=2048)
     #H2_dft, freq_H2 = dft(h2, N=2048)
     #H3_dft, freq_H3 = dft(h3, N=2048)
-#
+    #
     #fig, ax = plt.subplots()
     #ax.plot(freq_H1, np.abs(H1_dft), label='h1 DFT')
     #ax.plot(freq_H2, np.abs(H2_dft), label='h2 DFT')
@@ -338,7 +413,11 @@ if __name__ == "__main__":
     #ax.legend()
     #plt.show()
 
-    parse_h5_to_obspy_station_data()
+    # Task 3a was done here, but since Jupyter is non-interactive Ive moved the code here
+    stream = parse_h5_to_obspy_station_data(num_files=1)
+    arrival_time_test = pick_arrival_time(stream)
+    exit()
+    
 
     exit()
 

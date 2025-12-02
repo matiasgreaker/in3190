@@ -14,11 +14,11 @@ def evaluate_transfer_function(a: np.ndarray, b: np.ndarray, z: np.ndarray) -> n
     # Evaluate numerator
     B = np.zeros_like(z, dtype=np.complex128)
     for i, coeff in enumerate(b):
-        B += coeff * z**(len(b)-i-1)
+        B += coeff * z**(i)
     # Evaluate denominator
     A = np.zeros_like(z, dtype=np.complex128)
     for i, coeff in enumerate(a):
-        A += coeff * z**(len(a)-i-1)
+        A += coeff * z**(i)
     return B / A
 
 
@@ -52,11 +52,14 @@ def plot_zplane(a: np.ndarray, b: np.ndarray, num_points: int = 500, zlim: bool 
 
     # Calculate the impulse response
     n, impulse_response = signal.dimpulse((b, a, 1), n=100)
-    print(len(n))
     impulse_response = np.reshape(impulse_response, shape=(-1,1))
+
+    # Calculate the frequency response
+    w, h = signal.freqz(b, a, worN=8000)
+
     # Plot the 3D surface
     fig = plt.figure()
-    ax = fig.add_subplot(122, projection='3d')
+    ax = fig.add_subplot(222, projection='3d')
     ax.plot_surface(X, Y, np.abs(H), cmap='viridis')
     ax.set_xlabel('Real Part')
     ax.set_ylabel('Imaginary Part')
@@ -66,6 +69,13 @@ def plot_zplane(a: np.ndarray, b: np.ndarray, num_points: int = 500, zlim: bool 
         zlimit = np.max(np.abs(H))*0.05
         ax.set_zlim(0, zlimit)
     ax.set_title('Z-Plane')
+
+    ax23 = fig.add_subplot(224)
+    ax23.plot(w, np.abs(h))
+    ax23.set_xlabel('Frequency (rad/sample)')
+    ax23.set_ylabel('Magnitude')
+    ax23.set_title('Frequency Response |H(e^{jω})|')
+
     # Plot the unit circle and poles/zeros
     ax2 = fig.add_subplot(221)
     ax2.plot(np.real(unit_circle), np.imag(unit_circle),  linestyle="-", color='black')
